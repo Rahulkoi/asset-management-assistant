@@ -216,6 +216,12 @@ make eval                         # full run → evals/report.md
 ./.venv/bin/python -m evals.runner --filter 7-writes --limit 5
 ```
 
+**The runner paces itself, and has to.** A case costs ~4–5k tokens; the Groq
+free tier allows 8k per minute. Run flat out and the suite rate-limits itself,
+at which point the report measures the provider's quota rather than the agent —
+so `--delay` defaults to 45 seconds between cases. Budget ~35 minutes for a full
+45-case run, or drop it to `--delay 0` on a paid tier.
+
 The scorer is itself tested: `tests/test_evals.py` feeds it known-good and
 known-bad agent behaviour, including a deliberately misbehaving model that
 self-confirms a transfer, to prove the unauthorised-write assertion actually
@@ -224,6 +230,9 @@ fires.
 ---
 
 ## API
+
+Full reference with request/response shapes, error codes and the write flow:
+**[`docs/API.md`](docs/API.md)**.
 
 `make run-api`, then <http://localhost:8000/docs> for interactive OpenAPI docs.
 
