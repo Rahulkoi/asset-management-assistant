@@ -106,8 +106,8 @@ reporting, WFH equipment, offboarding. That is genuinely unstructured prose
 where the answer is a passage, not a row. So the assistant runs both: SQL for
 facts, retrieval for prose, and the model picks per question.
 
-Retrieval is **hybrid** — BM25 plus `gemini-embedding-2` vectors, fused with
-reciprocal rank fusion. Two shapes of question show up and each breaks one
+
+
 retriever on its own:
 
 - *"What does the AMC cover for printers?"* — the words are in the document;
@@ -133,9 +133,31 @@ hypothetical.) Weighting by IDF also makes the floor discriminating: matching
 "stolen" counts far more than matching "days", and a query term absent from the
 corpus counts fully against the score.
 
-Measured on the current corpus, lexical-only: **9/9 recall on in-scope
-questions, 4/4 correct refusals on out-of-scope ones.** One known false positive
-is documented in [`tests/test_rag.py`](tests/test_rag.py) rather than hidden.
+**The hybrid half was dead code for most of this project's life**, and the way
+it failed is the interesting part. `embed_texts` passed a `list[str]` to the
+Gemini SDK, which looks like a batch but is read as *the parts of one
+document*: 32 chunks went in, one vector came out. A length guard then noticed
+the mismatch and correctly returned `None` rather than misaligning vectors
+against chunks — so retrieval silently fell back to lexical, with a valid key,
+a populated corpus, and no error anywhere. `/healthz` reported
+`embeddings: false` and that was taken as a missing key rather than a bug.
+
+Fixed by wrapping each text in its own `Content`. The guard stayed: degrading
+to lexical is right, and silently-wrong retrieval would have been worse than
+silently-absent retrieval. What was missing was any signal that the degrade had
+happened — which is why `/healthz` now earns its place in the pre-flight check.
+
+Measured on the current corpus with hybrid actually running: **7/7 recall on
+in-scope questions, 5/6 correct refusals.** The cosine floor is 0.68, chosen
+from the measured gap between the lowest in-scope score (0.698) and the highest
+out-of-scope one (0.658, *"how many annual leave days do I get?"*). A 0.04
+margin is thin, it is tuned to this corpus and this embedding model, and both
+numbers should be re-measured if either changes.
+
+The one remaining leak — *"what is our revenue this quarter?"* — passes the
+**lexical** floor, not the semantic one, by sharing a rare token with an
+unrelated section. It is documented in [`tests/test_rag.py`](tests/test_rag.py)
+rather than hidden.
 
 ---
 

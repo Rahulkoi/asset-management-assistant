@@ -5,60 +5,47 @@ you *say*; this one is what can go wrong and how you answer for it.
 
 ---
 
-## 0. Fix this first — it takes two minutes and removes the whole problem
+## 0. Provider: already switched to Gemini — verify, don't re-do
 
-**Your `GEMINI_API_KEY` is empty.** Not expired, not unbilled — the line in
-`.env` has no value after the `=`, which is why Google answers
-`Method doesn't allow unregistered callers`. Nothing is wrong with your account.
-
-**Google AI Studio is the free tier you want, and it stays free.** It is not
-trial credit that runs out — it is a permanently free tier with rate limits, and
-those limits are *far* above Groq's. Groq gives you 8,000 tokens per minute;
-AI Studio's free Flash tier is orders of magnitude more generous, which is the
-difference between pacing every question and not thinking about it at all.
-
-1. Go to <https://aistudio.google.com/apikey> and click **Create API key**.
-   Signing in with a Google account is all it needs — no card, no billing.
-2. Put it in `.env`:
+**This is done.** `.env` now runs chat *and* embeddings on your Google AI Studio
+key, and Groq is kept configured but inactive as a fallback. Confirm in one
+command:
 
 ```bash
-GEMINI_API_KEY=<paste the key here>
+curl -s localhost:8000/healthz
 ```
 
-3. **Check which model names your key actually serves** before switching. The
-   repo is configured for `gemini-3.6-flash` and `gemini-embedding-2`; if those
-   names are not on your key, the call 404s mid-demo. List them:
+Expect `"llm_provider": "gemini"`, `"model": "gemini-3.6-flash"` and — the one
+that was false before — **`"embeddings": true`**.
+
+What that bought you:
+
+| | Before (Groq) | Now (Gemini) |
+|---|---|---|
+| Token ceiling | 8,000/min — ~1 question per 40s | far higher; six questions back to back, verified, no pacing |
+| Retrieval | BM25 only | hybrid, dense half live |
+| *"Can I take my screen home?"* | found nothing | answers with 4 citations |
+
+**Google AI Studio is free permanently** — a rate-limited free tier, not trial
+credit that expires once used. That is the answer if anyone asks how you are
+running this without a bill.
+
+> **Rotate this key after the demo.** You pasted it into a chat, so treat it as
+> disclosed. Delete it at <https://aistudio.google.com/apikey> and issue a new
+> one — it takes the same two minutes it took to make.
+
+If Gemini ever fails mid-demo, the fallback is one line in `.env`:
 
 ```bash
-source .env && curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | grep -o '"name": "models/[^"]*"'
+LLM_PROVIDER=openai_compat
 ```
 
-4. Set `LLM_MODEL` and `EMBEDDING_MODEL` in `.env` to names from that list, then
-   switch the provider:
-
-```bash
-LLM_PROVIDER=gemini
-```
-
-5. Rebuild the index and confirm:
-
-```bash
-make seed
-curl -s localhost:8000/healthz     # expect "embeddings": true
-```
-
-This does three things at once: it removes the rate-limit risk, it turns the
-dense half of retrieval back on so `/healthz` stops saying `embeddings: false`,
-and it gives you a second working provider to point at when someone asks what
-happens if a key dies.
-
-**If you have less than 30 minutes left, do not do this.** Groq works. Read
-section 1 and pace yourself instead. A half-migrated provider five minutes
-before a demo is a worse problem than a token ceiling you know about.
+That drops you back to Groq — and back to the 8k/min ceiling in section 1, and
+to `embeddings: false`, because embeddings are Gemini-only here.
 
 ---
 
-## 1. If you stay on Groq: the constraint that will bite you
+## 1. Only if you fall back to Groq: the token ceiling
 
 **Groq free tier gives you 8,000 tokens per minute. One agent turn costs
 ~4,000–5,000 tokens.**
@@ -136,24 +123,18 @@ Expect `"database": true`, `"policy_index": true`, `"llm_configured": true`.
 | Employees | 13, three-level reporting line |
 | In-repair units | AST1033 (HP EliteBook 840, Bangalore) · AST1034 (HP LaserJet Pro, Kolkata) |
 | Policy corpus | 7 documents, 46 chunks |
-| `embeddings` | **`false`** — see below |
+| `embeddings` | **`true`** — hybrid retrieval live |
 
-**`embeddings: false` is expected until you do section 0.** `GEMINI_API_KEY` is
-empty, so retrieval runs lexical-only (BM25). It works: policy questions that
-share vocabulary with the documents retrieve correctly, and the out-of-scope
-refusal still fires. What degrades is purely-semantic phrasing — *"can I take my
-screen home?"* won't reach the monitor policy.
+`embeddings: true` is the state you want, and it is what you now have. If it
+ever reads `false`, retrieval has degraded to lexical-only (BM25): policy
+questions sharing vocabulary with the documents still work and the out-of-scope
+refusal still fires, but purely-semantic phrasing — *"can I take my screen
+home?"* — will find nothing.
 
-Two options:
-
-- **Leave it.** Stick to the policy questions in the script, which are lexically
-  well-matched. If asked, answer honestly: *"the dense half needs an embedding
-  key that isn't live on this machine; the retriever is designed to degrade to
-  lexical rather than fail, and `/healthz` reports which mode it's in."* That is
-  a good answer — it shows the degradation was designed, not accidental.
-- **Fix it** — that is section 0, and it also solves the rate limit.
-
-Do **not** attempt the fix in the last 30 minutes before the demo.
+If that happens on the day, say it plainly: *"the dense half needs an embedding
+key; the retriever degrades to lexical rather than failing, and `/healthz`
+reports which mode it is in."* Designed degradation is a good answer. Then
+carry on with the lexically well-matched policy questions in the script.
 
 ---
 
@@ -294,6 +275,23 @@ best answer. Lead with #1; it is the strongest thing you have.
 3. **The retrieval relevance floor accepted everything.** It was a fraction of
    the best BM25 score, and the best hit is 1.0 by construction, so "what is the
    capital of France" passed. Fixed with IDF-weighted term coverage.
+
+5. **Hybrid retrieval was dead code and nothing said so.** `embed_texts`
+   passed a `list[str]` to the Gemini SDK. That looks like a batch but is read
+   as *the parts of one document* — 32 chunks in, one vector out. A length
+   guard spotted the mismatch and returned `None`, so the system fell back to
+   lexical search: valid key, populated corpus, no error anywhere, and
+   `/healthz` honestly reporting `embeddings: false` which everyone read as a
+   missing key. The guard was right to degrade rather than misalign vectors
+   against chunks; what was missing was any signal that the degrade had
+   happened. Fixed by wrapping each text in its own `Content`.
+
+   Then the *floor* had to be re-tuned, because it had never faced real cosine
+   scores: 0.60 sat below the highest out-of-scope score (0.658), so
+   out-of-scope questions started retrieving. Measured the gap and moved it to
+   0.68 — in-scope bottoms out at 0.698. Say the margin is 0.04 and thin, and
+   that it is tuned to this corpus and this embedding model. Quoting a measured
+   threshold with its error bars beats quoting a round number you picked.
 
 4. **The eval scorer was scoring typography, not answers.** `gpt-oss-120b`
    emits U+202F — a narrow no-break space — inside proper nouns, so a

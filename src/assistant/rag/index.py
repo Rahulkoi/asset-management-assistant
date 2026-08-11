@@ -68,9 +68,14 @@ def embed_texts(texts: list[str], *, task: str = "search result") -> list[list[f
 
         client = genai.Client(api_key=settings.resolved_gemini_key)
         vectors: list[list[float]] = []
-        # Batched to stay well inside free-tier request limits.
+        # Each text must be its own Content. Passing a plain list[str] looks
+        # like a batch but is read as the *parts of one document*: 32 chunks in,
+        # one vector out. The length guard below then rejected the result and
+        # returned None, so dense retrieval silently never ran — with a valid
+        # key, a populated corpus and no error anywhere. Hybrid search was
+        # lexical-only in practice until this was fixed.
         for start in range(0, len(texts), 32):
-            batch = texts[start : start + 32]
+            batch = [types.Content(parts=[types.Part(text=t)]) for t in texts[start : start + 32]]
             result = client.models.embed_content(
                 model=settings.embedding_model,
                 contents=batch,
@@ -81,6 +86,9 @@ def embed_texts(texts: list[str], *, task: str = "search result") -> list[list[f
             for item in result.embeddings:
                 values = getattr(item, "values", None) or getattr(item, "embedding", None)
                 vectors.append(list(values))
+        # Keep the guard: a partial batch must degrade to lexical rather than
+        # misalign vectors against chunks. It is the reason this stayed quiet,
+        # but silently-wrong retrieval would have been worse.
         return vectors if len(vectors) == len(texts) else None
     except Exception:  # noqa: BLE001 - optional capability
         logger.warning("Embedding backend unavailable; using lexical search only", exc_info=True)
@@ -115,10 +123,29 @@ def load_or_build(
     if path.exists():
         try:
             index = PolicyIndex.load(path)
-            # Rebuild if the corpus changed under a stale index.
-            if len(index.chunks) == len(chunk_directory(directory)):
+            if len(index.chunks) != len(chunk_directory(directory)):
+                logger.info("Policy corpus changed; rebuilding index")
+            elif settings.embeddings_available and not index.has_embeddings:
+                # The cached index was built without a key. Matching the corpus
+                # is not enough to reuse it: adding a key later would otherwise
+                # leave retrieval silently lexical-only forever, with /healthz
+                # reporting embeddings:false and no way to fix it short of
+                # deleting the file by hand.
+                logger.info("Embeddings now available; rebuilding index")
+            elif (
+                settings.embeddings_available
+                and index.has_embeddings
+                and index.model != settings.embedding_model
+            ):
+                # Vectors from a different model are not comparable with query
+                # vectors from this one; the cosine scores would be meaningless.
+                logger.info(
+                    "Embedding model changed (%s -> %s); rebuilding index",
+                    index.model,
+                    settings.embedding_model,
+                )
+            else:
                 return index
-            logger.info("Policy corpus changed; rebuilding index")
         except (OSError, ValueError, KeyError, TypeError):
             logger.warning("Policy index unreadable; rebuilding", exc_info=True)
 

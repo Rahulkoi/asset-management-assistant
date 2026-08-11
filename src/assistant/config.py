@@ -70,7 +70,17 @@ class Settings(BaseSettings):
     rag_coverage_floor: float = Field(
         default=0.45, description="Share of the query's IDF-weighted terms the chunk must contain."
     )
-    rag_cosine_floor: float = Field(default=0.60)
+    # Measured against gemini-embedding-2 at 768 dimensions on this corpus:
+    # in-scope questions bottom out at 0.698, out-of-scope questions top out at
+    # 0.658 ("how many annual leave days do I get?"). 0.68 sits in that gap.
+    #
+    # The margin is 0.04, which is thin, and worth stating rather than hiding:
+    # the floor is tuned to this corpus and this embedding model, and both
+    # numbers should be re-measured if either changes. The lexical coverage
+    # floor is the more robust of the two guards; this one exists to catch the
+    # semantically-phrased questions coverage cannot see, and the two are
+    # combined with OR so a question only has to convince one of them.
+    rag_cosine_floor: float = Field(default=0.68)
     rag_use_embeddings: bool = Field(default=True)
 
     # --- Conversation memory --------------------------------------------
