@@ -129,6 +129,42 @@ def test_scorer_passes_a_correct_answer(factory, scratch_db: Path) -> None:
     assert result.passed, [c.name for c in result.failures()]
 
 
+def test_scorer_ignores_typographic_whitespace(factory, scratch_db: Path) -> None:
+    """A right answer must not fail on the model's choice of space character.
+
+    gpt-oss-120b emits U+202F (narrow no-break space) inside proper nouns and
+    figures, so a reply that reads "Amit Kumar" on screen is really
+    "Amit\u202fKumar". A raw substring test scored four correct cases as
+    failures before this was fixed. The escapes below are deliberate - the
+    point of the test is lost if an editor normalises them to plain spaces.
+    """
+    reply = "AST1002 is held by Amit\u202fKumar, reported within 24\u202fhours."
+    assert "Amit Kumar" not in reply, "test would be vacuous without the U+202F"
+
+    case = {
+        "id": "t-nbsp",
+        "category": "test",
+        "prompt": "who holds AST1002?",
+        "expect_contains": ["Amit Kumar", "24 hours"],
+    }
+    runtime_factory = factory([AssistantTurn(text=reply)])
+    result = run_case(case, runtime_factory, scratch_db)
+    assert result.passed, [c.name for c in result.failures()]
+
+
+def test_scorer_still_rejects_a_genuinely_absent_string(factory, scratch_db: Path) -> None:
+    """Normalisation must not become a wildcard that passes anything."""
+    case = {
+        "id": "t-nbsp-neg",
+        "category": "test",
+        "prompt": "who holds AST1002?",
+        "expect_contains": ["Priya Singh"],
+    }
+    runtime_factory = factory([AssistantTurn(text="AST1002 is held by Amit Kumar.")])
+    result = run_case(case, runtime_factory, scratch_db)
+    assert not result.passed
+
+
 def test_scorer_catches_a_wrong_answer(factory, scratch_db: Path) -> None:
     case = {
         "id": "t2",

@@ -103,7 +103,7 @@ Switch to the terminal.
 make test
 ```
 
-> "130 tests, no network, under two seconds. The agent loop is tested against a
+> "135 tests, no network, under two seconds. The agent loop is tested against a
 > scripted fake model, so a failure here means the harness is broken — not that
 > the model had an off day."
 

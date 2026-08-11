@@ -44,7 +44,7 @@ curl -s -D- -o /dev/null -X POST "$OPENAI_COMPAT_BASE_URL/chat/completions" -H "
 cd asset-assistant
 make seed          # MUST run — resets the database to a known state
 make verify-data   # expect: OK — all spreadsheet-sourced rows match
-make test          # expect: 133 passed in ~1.5s
+make test          # expect: 135 passed in ~1.5s
 ```
 
 `make seed` is not optional. Any transfer you rehearse changes the database, and
@@ -186,8 +186,31 @@ returned. Unsupported code → one regeneration; if it survives, the answer ship
 with a visible warning rather than passing an invention off as fact. There's an
 eval case for it (`adv-hallucination-bait`).
 
+**"Your eval report only shows 12 cases, not 45."**
+Deliberate — a case costs ~4–5k tokens and the free tier gives 8k a minute, so
+the committed run is a 12-case subset covering all eight categories. `make eval`
+runs the full 45. Say the number honestly rather than implying the whole set ran.
+
+**"Did you find anything interesting building this?"** — have this ready, it is
+your best answer. Three real bugs, all caught by tooling rather than by luck:
+
+1. **The model could confirm its own write.** It previewed a transfer and
+   redeemed its own token in the same turn, reporting the change as done before
+   the user saw anything — on roughly half of attempts. Fixed by making tokens
+   inert until a later user turn releases them.
+2. **The retrieval relevance floor accepted everything.** It was a fraction of
+   the best BM25 score, and the best hit is 1.0 by construction, so "what is the
+   capital of France" passed. Fixed with IDF-weighted term coverage.
+3. **The eval scorer was scoring typography, not answers.** `gpt-oss-120b`
+   emits U+202F — a narrow no-break space — inside proper nouns, so a reply
+   reading "Amit Kumar" on screen is really `Amit Kumar`. A raw substring
+   check failed it. Four correct cases were reported as failures until the
+   scorer normalised Unicode before matching. **The lesson is the useful part:
+   a red eval is not automatically the model's fault, and an eval you don't
+   check can defame your own system.**
+
 **"How do you know it works?"** — two separate things, and say so:
-`make test` is 133 deterministic tests, no network, ~1.5s — a failure means the
+`make test` is 135 deterministic tests, no network, ~1.5s — a failure means the
 *harness* is broken. `make eval` is golden cases against the real model, scored
 on tool selection, content and guardrails separately, each against a fresh
 database copy so `expect_db_unchanged` is a real assertion.
@@ -232,7 +255,7 @@ build.
 | `Rate limited by …` | Name it as the free-tier ceiling, note it degrades cleanly, wait ~60s, carry on |
 | Model gives an odd answer | Don't retry — say what the eval set measures and move on. Honesty costs less than a second failed attempt |
 | UI won't start | Fall back to `curl` against the API — the script's questions all work as `POST /chat` |
-| Everything is broken | `make test` — 133 tests, no network, always works. Close on it |
+| Everything is broken | `make test` — 135 tests, no network, always works. Close on it |
 
 **`make test` is your reliable closer.** It needs no API key, no network, and
 finishes in under two seconds. If the live model embarrasses you, this is the

@@ -32,6 +32,7 @@ import shutil
 import sys
 import tempfile
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -97,8 +98,25 @@ def _db_fingerprint(db_path: Path) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def _normalise(text: str) -> str:
+    """Fold typographic variants onto ASCII before matching.
+
+    Models emit U+202F (narrow no-break space) inside names and U+2011
+    (non-breaking hyphen) inside compounds, so a raw substring test rejects
+    "Amit Kumar" against a reply that reads exactly that on screen. Scoring the
+    typography instead of the answer makes the eval report correct behaviour as
+    a failure — which it did, on four cases, until this was fixed.
+    """
+    folded = unicodedata.normalize("NFKC", text)
+    folded = "".join(" " if ch.isspace() else ch for ch in folded)
+    folded = folded.replace("‑", "-").replace("–", "-").replace("—", "-")
+    folded = folded.replace("‘", "'").replace("’", "'")
+    folded = folded.replace("“", '"').replace("”", '"')
+    return " ".join(folded.split()).lower()
+
+
 def _contains(haystack: str, needle: str) -> bool:
-    return needle.lower() in haystack.lower()
+    return _normalise(needle) in _normalise(haystack)
 
 
 def _assert_turn(
@@ -386,7 +404,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"FAIL: {'; '.join(c.name for c in result.failures())}")
 
-    report = build_report(results, settings.llm_model)
+    report = build_report(results, settings.active_model)
     REPORT_PATH.write_text(report, encoding="utf-8")
     RESULTS_PATH.write_text(
         json.dumps(

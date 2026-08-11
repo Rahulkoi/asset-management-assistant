@@ -30,7 +30,7 @@ AI:  Done. AST1002 is now assigned to Priya Singh.
 make install                      # venv + dependencies
 cp .env.example .env              # add GEMINI_API_KEY (free: aistudio.google.com/apikey)
 make seed                         # build data/assets.db from the spreadsheet
-make test                         # 133 tests, no API key needed
+make test                         # 135 tests, no API key needed
 make run-ui                       # chat UI at localhost:8501
 ```
 
@@ -194,7 +194,7 @@ protection is the token gate, which is unaffected either way.
 
 Two separate things, because they fail for different reasons.
 
-**`make test` — 133 tests, no network, ~0.9s.** Everything deterministic: the
+**`make test` — 135 tests, no network, ~0.9s.** Everything deterministic: the
 data layer, tool dispatch and validation, all guardrails, the agent loop (driven
 by a scripted fake model), retrieval, the API, and the eval scorer itself. A
 failure here means the *harness* is broken.
@@ -299,7 +299,7 @@ src/assistant/
   obs/          structured JSONL tracing
 docs/policies/  the RAG corpus (7 documents)
 evals/          cases.yaml · runner.py · report.md
-tests/          133 tests
+tests/          135 tests
 ```
 
 Deeper design notes, the guardrail table and sequence diagrams are in

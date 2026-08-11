@@ -186,6 +186,6 @@ src/assistant/
   ui/                  Streamlit chat client
   obs/                 structured tracing
 evals/                 cases.yaml, runner.py, report.md
-tests/                 130 tests, no network required
+tests/                 135 tests, no network required
 docs/policies/         7 policy documents (the RAG corpus)
 ```
