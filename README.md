@@ -106,9 +106,9 @@ reporting, WFH equipment, offboarding. That is genuinely unstructured prose
 where the answer is a passage, not a row. So the assistant runs both: SQL for
 facts, retrieval for prose, and the model picks per question.
 
-
-
-retriever on its own:
+Retrieval is **hybrid** — BM25 plus `gemini-embedding-2` vectors (768
+dimensions), fused with reciprocal rank fusion. Two shapes of question show
+up and each breaks one retriever on its own:
 
 - *"What does the AMC cover for printers?"* — the words are in the document;
   BM25 wins.
