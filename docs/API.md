@@ -114,6 +114,29 @@ bound to both the session and a hash of the arguments. It stays inert until a
 new user turn releases it, so the model cannot preview and redeem a write in one
 turn. Approval for one change cannot be spent on a different one.
 
+**Release requires an actual approval, and the default is deny.** A next turn is
+necessary but not sufficient — the content of the reply decides:
+
+| Next message on that session | Pending preview |
+|---|---|
+| `"yes"`, `"go ahead"`, `"confirm"` | released, and the commit may proceed |
+| `"no"`, `"cancel that"`, `"stop"` | **discarded** |
+| a question, a new instruction, anything else | **discarded** |
+
+So a client cannot approve a write by sending unrelated traffic, and a preview
+the user ignored cannot be redeemed three turns later. The decision appears in
+the response's `guardrails` array as `user_approved`, `user_declined` or
+`no_decision`, so a caller can tell what happened without guessing:
+
+```json
+{"stage": "confirmation", "rule": "user_declined",
+ "action": "discarded", "detail": "discarded 1 pending write(s); user declined"}
+```
+
+If you are driving the API programmatically, do not rely on phrasing — send a
+literal `"yes"` to commit, and treat any `pending_confirmation` you did not
+answer as void.
+
 Note the deliberate asymmetry with [`POST /transfers`](#post-transfers), which
 commits immediately: an explicit API call *is* the confirmation. The two-phase
 gate exists for the path where intent was inferred from natural language.

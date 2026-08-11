@@ -5,7 +5,60 @@ you *say*; this one is what can go wrong and how you answer for it.
 
 ---
 
-## 1. The one constraint that will bite you
+## 0. Fix this first — it takes two minutes and removes the whole problem
+
+**Your `GEMINI_API_KEY` is empty.** Not expired, not unbilled — the line in
+`.env` has no value after the `=`, which is why Google answers
+`Method doesn't allow unregistered callers`. Nothing is wrong with your account.
+
+**Google AI Studio is the free tier you want, and it stays free.** It is not
+trial credit that runs out — it is a permanently free tier with rate limits, and
+those limits are *far* above Groq's. Groq gives you 8,000 tokens per minute;
+AI Studio's free Flash tier is orders of magnitude more generous, which is the
+difference between pacing every question and not thinking about it at all.
+
+1. Go to <https://aistudio.google.com/apikey> and click **Create API key**.
+   Signing in with a Google account is all it needs — no card, no billing.
+2. Put it in `.env`:
+
+```bash
+GEMINI_API_KEY=<paste the key here>
+```
+
+3. **Check which model names your key actually serves** before switching. The
+   repo is configured for `gemini-3.6-flash` and `gemini-embedding-2`; if those
+   names are not on your key, the call 404s mid-demo. List them:
+
+```bash
+source .env && curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" | grep -o '"name": "models/[^"]*"'
+```
+
+4. Set `LLM_MODEL` and `EMBEDDING_MODEL` in `.env` to names from that list, then
+   switch the provider:
+
+```bash
+LLM_PROVIDER=gemini
+```
+
+5. Rebuild the index and confirm:
+
+```bash
+make seed
+curl -s localhost:8000/healthz     # expect "embeddings": true
+```
+
+This does three things at once: it removes the rate-limit risk, it turns the
+dense half of retrieval back on so `/healthz` stops saying `embeddings: false`,
+and it gives you a second working provider to point at when someone asks what
+happens if a key dies.
+
+**If you have less than 30 minutes left, do not do this.** Groq works. Read
+section 1 and pace yourself instead. A half-migrated provider five minutes
+before a demo is a worse problem than a token ceiling you know about.
+
+---
+
+## 1. If you stay on Groq: the constraint that will bite you
 
 **Groq free tier gives you 8,000 tokens per minute. One agent turn costs
 ~4,000–5,000 tokens.**
@@ -44,7 +97,7 @@ curl -s -D- -o /dev/null -X POST "$OPENAI_COMPAT_BASE_URL/chat/completions" -H "
 cd asset-assistant
 make seed          # MUST run — resets the database to a known state
 make verify-data   # expect: OK — all spreadsheet-sourced rows match
-make test          # expect: 135 passed in ~1.5s
+make test          # expect: 138 passed in ~1.5s
 ```
 
 `make seed` is not optional. Any transfer you rehearse changes the database, and
@@ -85,12 +138,11 @@ Expect `"database": true`, `"policy_index": true`, `"llm_configured": true`.
 | Policy corpus | 7 documents, 46 chunks |
 | `embeddings` | **`false`** — see below |
 
-**`embeddings: false` is expected right now, and you should be ready for it.**
-Your `GEMINI_API_KEY` returns 403 — it's dead or the project has no billing
-enabled. Retrieval is running lexical-only (BM25). It works: policy questions
-that share vocabulary with the documents retrieve correctly, and the
-out-of-scope refusal still fires. What degrades is purely-semantic phrasing —
-*"can I take my screen home?"* won't reach the monitor policy.
+**`embeddings: false` is expected until you do section 0.** `GEMINI_API_KEY` is
+empty, so retrieval runs lexical-only (BM25). It works: policy questions that
+share vocabulary with the documents retrieve correctly, and the out-of-scope
+refusal still fires. What degrades is purely-semantic phrasing — *"can I take my
+screen home?"* won't reach the monitor policy.
 
 Two options:
 
@@ -99,11 +151,9 @@ Two options:
   key that isn't live on this machine; the retriever is designed to degrade to
   lexical rather than fail, and `/healthz` reports which mode it's in."* That is
   a good answer — it shows the degradation was designed, not accidental.
-- **Fix it in 2 minutes** if you want hybrid on: get a fresh key at
-  <https://aistudio.google.com/apikey>, put it in `.env`, `make seed` to rebuild
-  the index, and `/healthz` should flip to `"embeddings": true`.
+- **Fix it** — that is section 0, and it also solves the rate limit.
 
-Do **not** attempt the fix in the last 20 minutes before the demo.
+Do **not** attempt the fix in the last 30 minutes before the demo.
 
 ---
 
@@ -121,6 +171,14 @@ loud as you go — it makes the mapping impossible to miss.
 | 5. Recommend assets | 2:00 | `Find an available laptop in Bangalore` |
 | **Agentic (mandatory)** | throughout | Open the trace panel every time — it names the tool chosen |
 | Add / transfer asset | 3:00 | `Transfer AST1002 to Priya Singh` → `yes` |
+| **Refusal holds** | 3:00 | `Transfer AST1002 to Vikram Shah` → **Cancel**, then check `/audit` is still empty |
+
+**Add the refusal to your demo — it is 20 seconds and it is your best moment.**
+Preview a transfer, click **Cancel**, then open the trace panel and show the
+`user_declined → discarded` guardrail. Then say: *"the preview no longer exists,
+so there is nothing left for the model to redeem. It isn't that the model
+decided not to — it can't."* Anyone can show a happy path; showing that the
+refusal is enforced in the store is what a senior answer looks like.
 
 The mandatory requirement is *"the agent decides which tool to use, without
 hardcoding every scenario."* **The trace panel is your evidence.** Expand it on
@@ -165,13 +223,20 @@ system that cannot count. Policy prose is the genuine retrieval problem, so the
 system runs both and the model picks. This is a strong answer — lead with it.
 
 **"How do you stop it writing to the database by mistake?"**
-A write tool called without a confirmation token changes nothing. The token is
-server-side, single-use, 5-minute TTL, bound to the session *and* a hash of the
-arguments, and inert until a **later user turn** releases it. So committing
-always requires a second human message. Mention that the model self-confirming
-in one turn was a real bug you found and closed —
-`test_model_cannot_confirm_its_own_write_in_one_turn` holds that line. Admitting
-a caught bug reads as rigour, not weakness.
+Three things stack, and say them in this order:
+
+1. A write tool called **without** a token changes nothing — it validates,
+   previews, and hands back a token.
+2. The token is server-side, single-use, 5-minute TTL, and bound to the session
+   *and* a hash of the arguments, so approval for one change cannot be spent on
+   another.
+3. It is **inert until a later user turn**, so the model cannot preview and
+   redeem in one breath — and that later turn only releases it if the user
+   actually said yes. A refusal, a question, or a change of subject **destroys**
+   the preview.
+
+Then volunteer that points 3 was two separate bugs you found and closed. That
+is the answer that separates you from someone who wired up function calling.
 
 **"Where did the manager / availability data come from? It's not in the sheet."**
 Answer this *before* they ask — it's in your script at 1:00. Two of the five
@@ -191,26 +256,59 @@ Deliberate — a case costs ~4–5k tokens and the free tier gives 8k a minute, 
 the committed run is a 12-case subset covering all eight categories. `make eval`
 runs the full 45. Say the number honestly rather than implying the whole set ran.
 
-**"Did you find anything interesting building this?"** — have this ready, it is
-your best answer. Three real bugs, all caught by tooling rather than by luck:
+**"Did you find anything interesting building this?"** — this is your single
+best answer. Lead with #1; it is the strongest thing you have.
 
-1. **The model could confirm its own write.** It previewed a transfer and
+1. **"Cancel" armed the write it was meant to stop.** The design says a write
+   needs the user's approval, and the token was correctly inert until a later
+   user turn released it. But release fired on *any* next message — so the
+   user's actual answer was never read. "No, cancel that" released the transfer
+   it refused. The UI's Cancel button sends exactly that text, so the button
+   armed the change it existed to prevent.
+
+   The part worth dwelling on: **the eval case for cancellation passed the
+   whole time.** It asserted the database was unchanged, and it was — because
+   the model chose not to redeem a token it was holding and fully entitled to
+   use. The guardrail was not holding; the model was being polite. A green test
+   that measures manners instead of mechanism is worse than no test, because it
+   buys confidence it has not earned.
+
+   Fixed by making the *content* of the answer decide, with deny as the
+   default: an affirmative releases, and a refusal — or a question, or a
+   change of subject — discards the preview outright. Discarding matters,
+   because an unapproved token still sits in the store waiting for the next
+   turn to release it. The eval now asserts the guardrail fired, not just that
+   nothing moved.
+
+   If they ask why not let the model decide: because that is the discretion the
+   whole design exists to remove. The parse runs in code on the user's words;
+   the model never sees the decision and cannot talk it round.
+
+2. **The model could confirm its own write.** It previewed a transfer and
    redeemed its own token in the same turn, reporting the change as done before
-   the user saw anything — on roughly half of attempts. Fixed by making tokens
-   inert until a later user turn releases them.
-2. **The retrieval relevance floor accepted everything.** It was a fraction of
+   the user saw anything — on roughly half of attempts. Fixed by making
+   tokens inert until a later user turn releases them. (This is the bug that
+   *created* the gap in #1: the turn gate was the right fix, but a delay was
+   mistaken for a veto.)
+
+3. **The retrieval relevance floor accepted everything.** It was a fraction of
    the best BM25 score, and the best hit is 1.0 by construction, so "what is the
    capital of France" passed. Fixed with IDF-weighted term coverage.
-3. **The eval scorer was scoring typography, not answers.** `gpt-oss-120b`
-   emits U+202F — a narrow no-break space — inside proper nouns, so a reply
-   reading "Amit Kumar" on screen is really `Amit Kumar`. A raw substring
-   check failed it. Four correct cases were reported as failures until the
-   scorer normalised Unicode before matching. **The lesson is the useful part:
-   a red eval is not automatically the model's fault, and an eval you don't
-   check can defame your own system.**
+
+4. **The eval scorer was scoring typography, not answers.** `gpt-oss-120b`
+   emits U+202F — a narrow no-break space — inside proper nouns, so a
+   reply reading "Amit Kumar" on screen is really "Amit\u202fKumar". A raw
+   substring check failed it, and four correct cases were reported as failures
+   until the scorer normalised Unicode first. **A red eval is not automatically
+   the model's fault.**
+
+Notice the shape of #1 and #4 together, and say it out loud if you get the
+chance: one was a test passing for the wrong reason, the other a test failing
+for the wrong reason. Both were found by distrusting a green tick and a red
+cross respectively. That is the habit worth hiring.
 
 **"How do you know it works?"** — two separate things, and say so:
-`make test` is 135 deterministic tests, no network, ~1.5s — a failure means the
+`make test` is 138 deterministic tests, no network, ~1.5s — a failure means the
 *harness* is broken. `make eval` is golden cases against the real model, scored
 on tool selection, content and guardrails separately, each against a fresh
 database copy so `expect_db_unchanged` is a real assertion.
@@ -255,7 +353,7 @@ build.
 | `Rate limited by …` | Name it as the free-tier ceiling, note it degrades cleanly, wait ~60s, carry on |
 | Model gives an odd answer | Don't retry — say what the eval set measures and move on. Honesty costs less than a second failed attempt |
 | UI won't start | Fall back to `curl` against the API — the script's questions all work as `POST /chat` |
-| Everything is broken | `make test` — 135 tests, no network, always works. Close on it |
+| Everything is broken | `make test` — 138 tests, no network, always works. Close on it |
 
 **`make test` is your reliable closer.** It needs no API key, no network, and
 finishes in under two seconds. If the live model embarrasses you, this is the

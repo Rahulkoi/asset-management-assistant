@@ -30,7 +30,7 @@ AI:  Done. AST1002 is now assigned to Priya Singh.
 make install                      # venv + dependencies
 cp .env.example .env              # add GEMINI_API_KEY (free: aistudio.google.com/apikey)
 make seed                         # build data/assets.db from the spreadsheet
-make test                         # 135 tests, no API key needed
+make test                         # 138 tests, no API key needed
 make run-ui                       # chat UI at localhost:8501
 ```
 
@@ -141,7 +141,7 @@ is documented in [`tests/test_rag.py`](tests/test_rag.py) rather than hidden.
 
 ## Guardrails
 
-Fifteen controls across five layers — the full table is in
+Sixteen controls across five layers — the full table is in
 [ARCHITECTURE.md](ARCHITECTURE.md#guardrail-layers). The important ones:
 
 **Writes cannot happen without approval.** A write tool called without a
@@ -165,14 +165,41 @@ roughly half of attempts, and the test suite missed it because it only covered
 
 So a token is inert until a later user turn releases it
 (`ConfirmationStore.release_for_session`, called at the top of `run_turn`).
-Committing therefore always requires a second user message — the turn boundary
-is the human's veto point, and it is enforced in the store rather than left to
-the model's discretion. `test_model_cannot_confirm_its_own_write_in_one_turn`
-holds that line.
+Committing therefore always requires a second user message.
+`test_model_cannot_confirm_its_own_write_in_one_turn` holds that line.
+
+**A turn boundary is a delay, not a veto** — and treating the two as the same
+thing was the second defect here, subtler than the first. Releasing on *any*
+next message meant the user's actual answer was never consulted: "no, cancel
+that" approved the very write it refused, and the UI's own Cancel button armed
+the change it existed to stop. What remained between a refusal and a commit was
+the model choosing to be polite, which is precisely the discretion this design
+exists to remove.
+
+The eval case for cancellation passed the whole time. It asserted the database
+was unchanged, and it was — because the model declined to redeem a token it had
+been handed and was fully entitled to use. A green test measuring manners
+rather than mechanism is worse than no test, because it buys confidence it has
+not earned.
+
+So the *content* of the answer decides, and the default is deny.
+`interpret_confirmation` reads the user's reply in code: a clear affirmative
+releases the preview, and anything else — a refusal, a question, a change of
+subject — **destroys** it, so a preview the user never accepted cannot be
+redeemed by a later turn. Discarding rather than leaving it unapproved matters,
+since an unapproved token still sits in the conversation waiting for a second
+chance. Three tests hold this: `test_refusal_destroys_the_pending_write`,
+`test_changing_the_subject_destroys_the_pending_write`, and
+`test_approval_still_commits`.
+
+Parsing assent in code is not the same as asking the model nicely to respect
+it — the model never sees this decision and cannot argue with it. The cost is
+that an unusually phrased approval reads as "no decision" and the write must be
+requested again. That is a safe failure, and the correct direction to fail in.
 
 That is the design's centre of gravity. Prompt-level defences reduce the chance
-of a mistake; the turn-gated token makes an unapproved write structurally
-impossible.
+of a mistake; a token that is turn-gated *and* consent-gated makes an
+unapproved write structurally impossible.
 
 **Grounded answers.** Every asset code in a reply is cross-checked against what
 the tools actually returned. An unsupported code triggers one regeneration; if
@@ -194,7 +221,7 @@ protection is the token gate, which is unaffected either way.
 
 Two separate things, because they fail for different reasons.
 
-**`make test` — 135 tests, no network, ~0.9s.** Everything deterministic: the
+**`make test` — 138 tests, no network, ~0.9s.** Everything deterministic: the
 data layer, tool dispatch and validation, all guardrails, the agent loop (driven
 by a scripted fake model), retrieval, the API, and the eval scorer itself. A
 failure here means the *harness* is broken.
@@ -299,7 +326,7 @@ src/assistant/
   obs/          structured JSONL tracing
 docs/policies/  the RAG corpus (7 documents)
 evals/          cases.yaml · runner.py · report.md
-tests/          135 tests
+tests/          138 tests
 ```
 
 Deeper design notes, the guardrail table and sequence diagrams are in

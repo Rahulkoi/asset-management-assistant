@@ -116,6 +116,7 @@ sequenceDiagram
 | Loop | Final pass runs with tools removed | A turn ending mid-plan with no answer |
 | Write | Two-phase confirmation token | Any mutation the user did not approve |
 | Write | Token inert until a later user turn releases it | The model previewing and redeeming its own token in one turn |
+| Write | Release requires an affirmative answer; anything else discards the preview | A refusal, or an ignored preview, being redeemed on a later turn |
 | Write | Token bound to session + arguments + TTL, single use | Replay; approval swapped onto a different change |
 | Write | Optimistic concurrency on `updated_at` | Committing against a row that moved after the preview |
 | Write | Idempotency key + audit row per mutation | Double-applied retries; unattributable changes |
@@ -126,14 +127,47 @@ The write gate is the load-bearing one. Everything else reduces the chance of a
 mistake; the token gate makes an unapproved write *structurally* impossible,
 regardless of how convinced the model is.
 
-Note the second row carefully, because it is the row that makes the claim true.
+Note the two release rows carefully, because together they are what make the
+claim true.
+
 Binding a token to session, arguments and TTL says nothing about *who* redeemed
 it, and the token is handed to the model in the tool result — so a model that
 previews a change can immediately redeem its own token and report the change as
 done, without the user having seen a thing. Tokens are therefore inert until
 `ConfirmationStore.release_for_session` marks them redeemable, which happens
 once per user turn at the top of `run_turn`. Commit requires a second user
-message; the turn boundary is where the human's veto lives.
+message.
+
+A second user message is necessary but **not sufficient**, and conflating the
+two was a real defect. Releasing on any next message meant the user's answer
+was never read: "no, cancel that" released the write it refused, and the UI's
+Cancel button — which sends exactly that text — armed the change it existed to
+stop. The only remaining obstacle was the model declining to use a token it held
+and was entitled to redeem.
+
+So `run_turn` resolves an outstanding preview against the answer itself, via
+`interpret_confirmation`, and the default is deny:
+
+| User's next message | Effect on the pending preview |
+|---|---|
+| Clear affirmative — "yes", "go ahead", "confirm" | Released; redeemable this turn |
+| Clear refusal — "no", "cancel", "stop" | **Discarded** |
+| Anything else — a question, a new instruction, silence on the subject | **Discarded** |
+
+Discarding rather than merely withholding approval is the important half: an
+unapproved token still sits in the store, and the *next* turn would otherwise be
+a fresh chance to release it. A preview the user declined stops existing.
+
+The parse is deterministic, narrow and applied to the user's words in code — the
+model never sees the decision and cannot argue with it. An unusually phrased
+approval therefore reads as "no decision" and the write must be asked for again.
+That is the safe direction to fail in.
+
+This is also a lesson about tests. The eval case asserting the database was
+unchanged after a cancellation passed throughout, because the model happened to
+behave. A green assertion that measures manners rather than mechanism is worse
+than no assertion, since it buys confidence it has not earned. The case now
+asserts the guardrail fired, not just that nothing moved.
 
 ## Design decisions
 
@@ -186,6 +220,6 @@ src/assistant/
   ui/                  Streamlit chat client
   obs/                 structured tracing
 evals/                 cases.yaml, runner.py, report.md
-tests/                 135 tests, no network required
+tests/                 138 tests, no network required
 docs/policies/         7 policy documents (the RAG corpus)
 ```

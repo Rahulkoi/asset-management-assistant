@@ -336,6 +336,67 @@ def test_release_only_applies_to_the_issuing_session(make_runtime, scratch_db: P
     assert record is not None and not record.approved
 
 
+def _preview_then_try_to_commit(make_runtime, scratch_db: Path, answer: str):
+    """Preview a transfer, answer it with `answer`, then have the model try to
+    commit using the token it was handed. Returns the asset's holder afterwards.
+    """
+    runtime, _ = make_runtime(
+        [
+            AssistantTurn(
+                tool_calls=[call("transfer_asset", asset_code="AST1002", to_employee="Priya Singh")]
+            ),
+            AssistantTurn(text="This would move AST1002. Shall I go ahead?"),
+        ]
+    )
+    first = runtime.run_turn("s1", "transfer AST1002 to Priya Singh")
+    token = first.pending_confirmation["confirm_token"]
+
+    # A model that redeems regardless of what the user said. The guardrail must
+    # not depend on the model being well behaved.
+    runtime.client._turns = [
+        AssistantTurn(
+            tool_calls=[
+                call(
+                    "transfer_asset",
+                    asset_code="AST1002",
+                    to_employee="Priya Singh",
+                    confirm_token=token,
+                )
+            ]
+        ),
+        AssistantTurn(text="Done."),
+    ]
+    runtime.run_turn("s1", answer)
+    return repo.get_asset("AST1002", db_path=scratch_db)["assigned_to"]
+
+
+def test_refusal_destroys_the_pending_write(make_runtime, scratch_db: Path) -> None:
+    """Saying no must stop the write, not merely delay it.
+
+    Releasing on any next message meant a refusal approved the very change it
+    rejected — the UI's Cancel button sends "No, cancel that", which armed the
+    transfer. Nothing but the model's goodwill stood in the way.
+    """
+    holder = _preview_then_try_to_commit(
+        make_runtime, scratch_db, "No, cancel that — do not make the change."
+    )
+    assert holder == "Amit Kumar"
+
+
+def test_changing_the_subject_destroys_the_pending_write(make_runtime, scratch_db: Path) -> None:
+    """Silence is not consent: an unanswered preview must not stay armed."""
+    holder = _preview_then_try_to_commit(make_runtime, scratch_db, "Where is AST1017?")
+    assert holder == "Amit Kumar"
+
+
+def test_approval_still_commits(make_runtime, scratch_db: Path) -> None:
+    """The deny-by-default gate must not break the path the user actually wants."""
+    holder = _preview_then_try_to_commit(
+        make_runtime, scratch_db, "Yes, please go ahead with that change."
+    )
+    assert holder == "Priya Singh"
+
+
 def test_injected_instruction_cannot_drive_a_write(make_runtime, scratch_db: Path) -> None:
     """Even if the model is fully persuaded, the gate still holds."""
     runtime, _ = make_runtime(

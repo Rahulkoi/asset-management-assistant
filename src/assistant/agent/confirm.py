@@ -22,8 +22,19 @@ So a token is inert until `release_for_session` marks it approved, and that is
 called once per user turn, at the top of `run_turn`. A token issued during the
 current turn therefore cannot be redeemed during the current turn: committing
 always requires the user to have seen the preview and sent another message.
-The turn boundary is the human's veto point, and it is enforced here rather
-than left to the model's discretion.
+
+But a turn boundary is only a *delay*, not a veto, and treating it as consent
+was a real defect here. Releasing on any next message meant "no, cancel that"
+approved the very write it refused — the UI's own Cancel button armed the
+change it was meant to stop — and the only thing left standing between a
+refusal and a commit was the model choosing to be polite. That is exactly the
+discretion this design exists to remove. The eval case for cancellation passed
+throughout, for the wrong reason.
+
+So the *content* of the user's answer decides, `interpret_confirmation` reads
+it, and the default is deny: only a clear affirmative releases a preview.
+Anything else — a refusal, a question, a change of subject — discards it, so a
+preview the user never accepted cannot be redeemed later.
 """
 
 from __future__ import annotations
@@ -40,6 +51,83 @@ from assistant.config import get_settings
 
 class ConfirmationError(Exception):
     """Raised when a token is missing, stale, spent, or bound to different arguments."""
+
+
+# Assent words only. Ordinary verbs an instruction happens to contain — "do",
+# "make", "go", "transfer", "add" — are deliberately absent: with them in the
+# set, "transfer AST1003 to Amit instead" parsed as approval of a *different*
+# pending transfer. A new instruction is not an answer.
+_AFFIRMATIVE = frozenset(
+    {
+        "yes", "y", "yeah", "yep", "yup", "ok", "okay", "sure", "confirm",
+        "confirmed", "approve", "approved", "proceed", "correct", "commit",
+        "fine", "agreed", "affirmative", "accept", "accepted",
+    }
+)
+
+# Assent that only exists as a phrase; a bare "go" or "do" means nothing.
+_AFFIRMATIVE_PHRASES = (
+    "go ahead", "go for it", "do it", "please do", "make it so",
+    "carry on", "sounds good", "looks good", "that's right", "thats right",
+)
+
+_NEGATIVE = frozenset(
+    {
+        "no", "n", "nope", "nah", "cancel", "stop", "abort", "don't", "dont",
+        "do not", "never", "nevermind", "discard", "reject", "decline",
+        "undo", "wait", "hold",
+    }
+)
+
+_MAX_DECISION_WORDS = 10
+
+
+def _tokens(message: str) -> list[str]:
+    cleaned = "".join(ch if ch.isalnum() or ch in "' " else " " for ch in message.lower())
+    return cleaned.split()
+
+
+def interpret_confirmation(message: str) -> bool | None:
+    """Read the user's answer to a pending preview. Deny by default.
+
+    Returns True only for a clear approval, False for a clear refusal, and None
+    when the message expresses no decision at all. Callers must treat both False
+    and None as "do not commit" — the distinction exists so the trace can say
+    which happened, not so that None can be treated as consent.
+
+    Deliberately deterministic and deliberately narrow. This parses the *user's*
+    words in code, which is a different thing from asking the model nicely to
+    respect them: the model never sees this decision and cannot talk it round.
+    The cost of the narrowness is that an approval phrased unusually reads as
+    "no decision", and the write simply has to be requested again — a safe
+    failure, and the correct direction to fail in.
+    """
+    words = _tokens(message)
+    if not words:
+        return None
+
+    # A long message is a new instruction, not an answer to a yes/no question.
+    if len(words) > _MAX_DECISION_WORDS:
+        return None
+
+    normalised = " ".join(words)
+    negative = any(w in _NEGATIVE for w in words)
+    affirmative = any(w in _AFFIRMATIVE for w in words) or any(
+        phrase in normalised for phrase in _AFFIRMATIVE_PHRASES
+    )
+
+    # "no, cancel that" and "yes but not that one" both contain an affirmative
+    # token somewhere. A refusal anywhere in a short answer wins outright.
+    if negative:
+        return False
+    if not affirmative:
+        return None
+
+    # A question is a request for information, never an approval: "ok, but who
+    # is using it?" must not commit a transfer.
+    if "?" in message:
+        return None
+    return True
 
 
 def payload_fingerprint(payload: dict[str, Any]) -> str:
@@ -119,15 +207,32 @@ class ConfirmationStore:
     def release_for_session(self, session_id: str) -> None:
         """Make this session's outstanding previews redeemable.
 
-        Called once per user turn, before the model runs. Everything previewed
-        in an earlier turn becomes redeemable; anything previewed during the
-        turn that follows does not, which is what stops same-turn
-        self-confirmation.
+        Call only when the user has actually approved. A turn boundary on its
+        own is not approval — see `discard_for_session` and the module
+        docstring.
         """
         self._evict_expired()
         for record in self._pending.values():
             if record.session_id == session_id and not record.consumed:
                 record.approved = True
+
+    def discard_for_session(self, session_id: str) -> int:
+        """Destroy this session's outstanding previews. Returns how many.
+
+        Used when the user's answer is anything other than a clear approval.
+        Discarding rather than merely leaving the token unapproved matters: an
+        unapproved token still sits in the conversation, and the next user turn
+        would otherwise be a second chance to release it. A preview the user
+        declined should stop existing.
+        """
+        doomed = [
+            token
+            for token, record in self._pending.items()
+            if record.session_id == session_id and not record.consumed
+        ]
+        for token in doomed:
+            del self._pending[token]
+        return len(doomed)
 
     def peek(self, token: str) -> PendingConfirmation | None:
         self._evict_expired()

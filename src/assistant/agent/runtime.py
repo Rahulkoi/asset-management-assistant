@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from assistant.agent import prompts
-from assistant.agent.confirm import ConfirmationStore
+from assistant.agent.confirm import ConfirmationStore, interpret_confirmation
 from assistant.agent.memory import SessionState, SessionStore
 from assistant.config import get_settings
 from assistant.guardrails import injection
@@ -114,10 +114,29 @@ class AgentRuntime:
                 "input", "prompt_injection", "flagged", verdict.injection_detail
             )
 
-        # A new user message is the only thing that can release a preview issued
-        # in an earlier turn. Anything previewed later in *this* turn stays
-        # inert, so the model cannot approve its own write. See confirm.py.
-        self.confirmations.release_for_session(session_id)
+        # Resolve any preview left over from an earlier turn against what the
+        # user actually said. A new message is necessary to release one, but not
+        # sufficient: only a clear approval releases, and anything else destroys
+        # the preview outright. Previews issued later in *this* turn are not
+        # touched here, so the model still cannot approve its own write.
+        # See confirm.py.
+        if self.confirmations.pending_for_session(session_id):
+            decision = interpret_confirmation(verdict.text)
+            if decision is True:
+                self.confirmations.release_for_session(session_id)
+                trace.record_guardrail(
+                    "confirmation", "user_approved", "released",
+                    "user approved the pending change",
+                )
+            else:
+                dropped = self.confirmations.discard_for_session(session_id)
+                trace.record_guardrail(
+                    "confirmation",
+                    "user_declined" if decision is False else "no_decision",
+                    "discarded",
+                    f"discarded {dropped} pending write(s); "
+                    + ("user declined" if decision is False else "no approval given"),
+                )
 
         session = self.sessions.get(session_id)
         session.turn_count += 1
