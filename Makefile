@@ -21,7 +21,7 @@ install:
 	$(PIP) install --upgrade pip
 	$(PIP) install -e ".[dev]"
 	@echo
-	@echo "Next: cp .env.example .env and add your NVIDIA_API_KEY, then 'make seed'."
+	@echo "Next: make seed, make test (no key). For live chat see SETUP.md — add a free Groq key to .env."
 
 seed:
 	$(PY) -m assistant.db.seed
