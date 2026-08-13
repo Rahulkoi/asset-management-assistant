@@ -169,6 +169,59 @@ behave. A green assertion that measures manners rather than mechanism is worse
 than no assertion, since it buys confidence it has not earned. The case now
 asserts the guardrail fired, not just that nothing moved.
 
+## Retrieval — hybrid, with a floor
+
+The 21-row asset table is not a retrieval problem: "how many printers in Mumbai"
+needs an exact count, so it runs as SQL. The policy corpus *is* prose, so it
+runs as hybrid RAG. The model picks per question. The engineering that matters
+is the floor — knowing when to return nothing.
+
+```mermaid
+flowchart LR
+    Q["policy query<br/><i>can I take my screen home?</i>"]
+    Q --> BM25["BM25<br/>lexical"]
+    Q --> DENSE["dense<br/>cosine"]
+    BM25 --> RRF["RRF fuse<br/><i>rank-order only</i>"]
+    DENSE --> RRF
+    RRF --> FLOOR{"relevance floor<br/>coverage OR cosine"}
+    FLOOR -->|above| CITE["cite passages"]
+    FLOOR -->|below| REFUSE["refuse — say it is not covered"]
+
+    classDef good fill:#eef7ee,stroke:#5a9e5a
+    classDef stop fill:#fdeeee,stroke:#c76d6d
+    class CITE good
+    class REFUSE stop
+```
+
+Reciprocal Rank Fusion consumes ordering, not scores, so there is nothing to
+tune between BM25's unbounded numbers and cosine's [-1, 1]. Measured on the
+corpus: **7/7 in-scope recall, 5/6 correct refusals**; the one leak passes the
+lexical floor and is documented in `tests/test_rag.py`.
+
+## Provider layer — swappable, with fallback
+
+The runtime talks to an `LLMClient` interface, never a vendor SDK, so switching
+provider is one line in `.env`. Providers that share the OpenAI wire format have
+interchangeable tool-call history, so they chain: when one free tier is
+exhausted, the turn transparently drops to the next instead of failing.
+
+```mermaid
+flowchart LR
+    RT["Agent runtime"] --> IF["LLMClient<br/>interface"]
+    IF --> FB["FallbackClient<br/><i>same-format chain</i>"]
+    FB -->|primary| GROQ["Groq<br/>gpt-oss-120b · fast"]
+    GROQ -.->|rate-limited| NV["NVIDIA<br/>slow, no daily cap"]
+    GEM["Gemini"] -.->|embeddings only| IDX[("Policy index")]
+
+    classDef alt fill:#fff4e6,stroke:#e8a33d
+    class GROQ,NV alt
+```
+
+Gemini's tool-call format differs, so it is kept out of the chat chain and used
+only for the embedding half of retrieval — a separate quota that chat traffic
+cannot exhaust. A whole-chain exhaustion still surfaces as a rate-limit, not a
+generic error, because the runtime keys its "try again" message off that type.
+
 ## Design decisions
 
 **Hand-written tool loop, not an SDK auto-loop.** The confirmation gate has to
@@ -210,7 +263,8 @@ portable across providers by construction.
 ```
 src/assistant/
   config.py            all tunables in one settings object
-  llm/                 provider abstraction — base, gemini, openai_compat
+  llm/                 provider abstraction — base, openai_compat, gemini,
+                       nvidia_nim, cerebras, ollama, fallback
   db/                  schema.sql, seed.py, repo.py (only module importing sqlite3)
   tools/               7 tools, schemas, registry, catalog
   rag/                 chunker, index, hybrid retriever
@@ -220,6 +274,27 @@ src/assistant/
   ui/                  Streamlit chat client
   obs/                 structured tracing
 evals/                 cases.yaml, runner.py, report.md
-tests/                 138 tests, no network required
+tests/                 151 tests, no network required
 docs/policies/         7 policy documents (the RAG corpus)
 ```
+
+## Built today vs. production hardening
+
+This is a single-agent system with a real safety model — not a multi-agent
+platform. Naming the gap is the point: everything on the right is a deliberate
+next step, not an oversight.
+
+| Built & verified | Production would add |
+|---|---|
+| Single agent, real tool selection (7 typed tools, no phrase→tool map) | Identity & multi-tenant — OIDC, per-request `tenant_id`, no shared trust |
+| Two-phase write gate — turn-gated **and** consent-gated tokens | Policy Enforcement Point — row-level filter on *every* query |
+| Hybrid RAG — BM25 + dense, RRF, relevance floor with refusal | Durable state — sessions & tokens in Redis, not process memory |
+| Provider abstraction + fallback — swap in one line | Approval chains — capture the manager sign-off transfers require |
+| Deterministic REST — the whole system minus the model is testable | PII redaction + egress checks, before prompt and before logs |
+| Grounding & citations — codes cross-checked against tool output | Semantic cache; concurrency limits; circuit breakers |
+| Observability — per-turn JSONL trace; 151 tests; 45 eval cases | Distributed tracing, metrics, alerting |
+
+The honest framing for a review: the left column is what runs; the right column
+is what you would build next, and why each matters. Claiming the right column
+exists is the fastest way to get caught — naming it as roadmap is what reads as
+judgment.
