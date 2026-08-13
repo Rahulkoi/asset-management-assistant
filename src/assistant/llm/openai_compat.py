@@ -1,4 +1,4 @@
-"""Fallback adapter for OpenAI-compatible endpoints (Groq, OpenRouter, vLLM...).
+"""Adapter for OpenAI-compatible endpoints (Cerebras, Groq, OpenRouter, vLLM...).
 
 Exists so a exhausted free tier is a one-line config change rather than an
 outage. Written against the wire format with httpx instead of pulling in another

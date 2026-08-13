@@ -134,12 +134,20 @@ class GeminiClient:
                         {"type": "message", "content": [{"type": "text", "text": message.text}]}
                     )
             elif isinstance(message, ToolResultMessage):
+                # The result must be a plain scalar, not a list of typed parts.
+                # Wrapping it as [{"type": "text", ...}] makes the API read it as
+                # a *multimodal* function response, which the stable models reject
+                # outright: "Multimodal function responses are not supported for
+                # this model" (400). gemini-3.6-flash-preview happened to tolerate
+                # the wrapped form, which is how this shipped — the tool loop's
+                # second call failed on every stable model until the string form
+                # went back.
                 rendered.append(
                     {
                         "type": "function_result",
                         "name": message.name,
                         "call_id": message.call_id,
-                        "result": [{"type": "text", "text": message.as_text()}],
+                        "result": message.as_text(),
                     }
                 )
         return rendered

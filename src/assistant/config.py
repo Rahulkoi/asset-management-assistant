@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     # --- Provider -------------------------------------------------------
     # The agent runtime talks to LLMClient, never to a vendor SDK. Switching
     # provider is a config change, not a refactor.
-    llm_provider: str = Field(default="gemini", description="gemini | openai_compat")
+    llm_provider: str = Field(
+        default="nvidia_nim", description="nvidia_nim | cerebras | gemini | openai_compat"
+    )
     llm_model: str = Field(default="gemini-3.6-flash")
     embedding_model: str = Field(default="gemini-embedding-2")
     embedding_dimensions: int = Field(default=768)
@@ -38,6 +40,24 @@ class Settings(BaseSettings):
     openai_compat_api_key: str | None = Field(default=None)
     openai_compat_base_url: str = Field(default="https://api.groq.com/openai/v1")
     openai_compat_model: str = Field(default="llama-3.3-70b-versatile")
+
+    # Cerebras uses the OpenAI chat-completions wire format, but keeps a
+    # provider-specific key so credentials cannot be accidentally sent to a
+    # different compatible endpoint.
+    cerebras_api_key: str | None = Field(default=None, alias="CEREBRAS_API_KEY")
+    cerebras_base_url: str = Field(default="https://api.cerebras.ai/v1")
+    cerebras_model: str = Field(default="gpt-oss-120b")
+
+    # NVIDIA NIM's serverless API uses the same chat-completions wire format.
+    nvidia_api_key: str | None = Field(default=None, alias="NVIDIA_API_KEY")
+    nvidia_nim_base_url: str = Field(default="https://integrate.api.nvidia.com/v1")
+    nvidia_nim_model: str = Field(default="meta/llama-3.3-70b-instruct")
+
+    # Ollama runs a model locally and serves the OpenAI format on localhost.
+    # No rate limit, no quota, no token budget — the point is unlimited testing.
+    ollama_api_key: str | None = Field(default=None, alias="OLLAMA_API_KEY")
+    ollama_base_url: str = Field(default="http://localhost:11434/v1")
+    ollama_model: str = Field(default="qwen2.5:7b")
 
     # --- Paths ----------------------------------------------------------
     data_dir: Path = Field(default=PROJECT_ROOT / "data")
@@ -99,6 +119,12 @@ class Settings(BaseSettings):
         called — misleading in /healthz and in the UI, where it is the one
         place a reviewer looks to see what answered them.
         """
+        if self.llm_provider.lower() == "ollama":
+            return self.ollama_model
+        if self.llm_provider.lower() == "nvidia_nim":
+            return self.nvidia_nim_model
+        if self.llm_provider.lower() == "cerebras":
+            return self.cerebras_model
         if self.llm_provider.lower() in {"openai_compat", "groq", "openrouter"}:
             return self.openai_compat_model
         return self.llm_model
@@ -111,6 +137,19 @@ class Settings(BaseSettings):
         Groq leaves retrieval lexical-only unless a Gemini key is also present.
         """
         return bool(self.rag_use_embeddings and self.resolved_gemini_key)
+
+    @property
+    def llm_configured(self) -> bool:
+        """Whether the selected chat provider has credentials configured."""
+        if self.llm_provider.lower() == "ollama":
+            return True  # local; needs no key, just a running server
+        if self.llm_provider.lower() == "nvidia_nim":
+            return bool(self.nvidia_api_key)
+        if self.llm_provider.lower() == "cerebras":
+            return bool(self.cerebras_api_key)
+        if self.llm_provider.lower() == "gemini":
+            return bool(self.resolved_gemini_key)
+        return bool(self.openai_compat_api_key)
 
 
 @lru_cache(maxsize=1)

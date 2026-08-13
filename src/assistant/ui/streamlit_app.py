@@ -162,11 +162,28 @@ def main() -> None:
     if error:
         st.error(error)
         st.info(
-            "Add a free Gemini key to `.env` as `GEMINI_API_KEY=...` "
-            "(https://aistudio.google.com/apikey), then restart. "
+            "Add an NVIDIA NIM key to `.env` as `NVIDIA_API_KEY=...` "
+            "(https://build.nvidia.com), then restart. "
             "The REST API and test suite work without one."
         )
         return
+
+    # Always render the input, and capture what was typed. It must be called
+    # unconditionally: the previous `pending_input or st.chat_input(...)` short-
+    # circuited the widget away on any turn a Confirm/Cancel button drove, so the
+    # box vanished after confirming and never came back. st.chat_input is pinned
+    # to the bottom regardless of call order, so rendering it here is fine.
+    typed = st.chat_input("Ask about an asset…")
+    prompt = st.session_state.pending_input or typed
+    st.session_state.pending_input = None
+
+    # A new turn resolves any outstanding preview — the runtime either commits it
+    # (on "yes") or discards it (on anything else). Retire the display flag on
+    # prior messages *before* the history renders, so a spent Confirm/Cancel card
+    # does not linger and invite a second click that does nothing.
+    if prompt:
+        for message in st.session_state.messages:
+            message["pending_confirmation"] = None
 
     for entry in st.session_state.messages:
         with st.chat_message(entry["role"]):
@@ -175,8 +192,6 @@ def main() -> None:
                 render_trace(entry)
                 render_pending(entry)
 
-    prompt = st.session_state.pending_input or st.chat_input("Ask about an asset…")
-    st.session_state.pending_input = None
     if not prompt:
         return
 

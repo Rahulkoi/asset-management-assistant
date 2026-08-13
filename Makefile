@@ -21,7 +21,7 @@ install:
 	$(PIP) install --upgrade pip
 	$(PIP) install -e ".[dev]"
 	@echo
-	@echo "Next: cp .env.example .env and add your GEMINI_API_KEY, then 'make seed'."
+	@echo "Next: cp .env.example .env and add your NVIDIA_API_KEY, then 'make seed'."
 
 seed:
 	$(PY) -m assistant.db.seed

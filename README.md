@@ -26,20 +26,26 @@ AI:  Done. AST1002 is now assigned to Priya Singh.
 
 ## Quick start
 
+**New here? Follow [SETUP.md](SETUP.md)** — a step-by-step guide that runs on a
+fresh machine in about 5 minutes.
+
 ```bash
 make install                      # venv + dependencies
-cp .env.example .env              # add GEMINI_API_KEY (free: aistudio.google.com/apikey)
 make seed                         # build data/assets.db from the spreadsheet
-make test                         # 138 tests, no API key needed
+make test                         # 151 tests, no API key needed
+cp .env.example .env              # add a free Groq key (console.groq.com/keys)
 make run-ui                       # chat UI at localhost:8501
 ```
 
-The REST API and the whole test suite work **without** an API key. Only the
-agent itself needs one.
+The REST API and the whole test suite work **without** an API key — only the
+live chat agent needs one. The recommended provider is **Groq** (free, fast, no
+credit card); the runtime is provider-agnostic, so NVIDIA NIM, Gemini, or any
+OpenAI-compatible endpoint work too by changing one line in `.env`. Policy
+search runs lexical-only by default, so a single key is all you need.
 
 ```bash
 make run-api                      # API + OpenAPI docs at localhost:8000/docs
-make eval                         # run the 45-case golden set
+make eval                         # run the 45-case golden set (needs a key)
 ```
 
 ---

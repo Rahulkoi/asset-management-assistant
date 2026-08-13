@@ -304,6 +304,6 @@ def healthz() -> HealthOut:
         policy_chunks=len(retriever.chunks) if retriever else 0,
         embeddings=bool(retriever and retriever.uses_embeddings),
         llm_provider=settings.llm_provider,
-        llm_configured=bool(settings.resolved_gemini_key or settings.openai_compat_api_key),
+        llm_configured=settings.llm_configured,
         model=settings.active_model,
     )
