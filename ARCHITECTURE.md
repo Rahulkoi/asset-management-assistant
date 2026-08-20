@@ -1,64 +1,82 @@
 # Architecture
 
-## System overview
+## System overview — every piece, connected
+
+One request enters from the UI or the REST API, passes the input guardrails,
+runs inside the bounded agent loop (which talks to a swappable provider layer),
+dispatches tools that hit the data stores, passes the output guardrails, and
+returns. Amber = safety controls, green = data stores, blue = model providers.
+Solid arrows are the request path; dotted are side effects and fallback.
 
 ```mermaid
 flowchart TB
-    subgraph clients["Clients"]
-        UI["Streamlit chat UI<br/><i>tool trace + confirm buttons</i>"]
-        REST["curl / OpenAPI<br/><i>/docs</i>"]
-    end
+  subgraph CL["Interfaces"]
+    direction LR
+    UI["Streamlit chat UI"]
+    API["REST API · FastAPI<br/>/chat · /assets · /transfers · /audit"]
+  end
 
-    subgraph api["FastAPI"]
-        CHAT["POST /chat<br/>POST /chat/stream"]
-        DET["GET /assets · /employees<br/>POST /assets · /transfers · /audit"]
-    end
+  GIN["INPUT GUARDRAILS<br/>rate limit · injection scan · length"]
 
-    subgraph runtime["Agent runtime"]
-        LOOP["Tool loop<br/><i>budgets, retries, tracing</i>"]
-        MEM["Session memory<br/><i>history + referents</i>"]
-        CONF["Confirmation store<br/><i>single-use tokens</i>"]
-    end
+  subgraph RT["Agent runtime · agent/runtime.py"]
+    direction LR
+    MEM["Session memory<br/>history + referents"]
+    LOOP["Agent loop<br/>generate ↔ execute<br/><i>≤6 iters · ≤8 calls · ≤90s</i>"]
+    CONF["Confirmation store<br/>two-phase write tokens"]
+  end
 
-    subgraph guards["Guardrails"]
-        GIN["input<br/>length · rate limit · injection scan"]
-        GTOOL["tool<br/>allowlist · schema validation · row caps"]
-        GOUT["output<br/>grounding · citations"]
-    end
+  subgraph PV["Provider layer · llm/ — swap in one line"]
+    direction LR
+    IFACE["LLMClient<br/>interface"]
+    FB["FallbackClient"]
+    GROQ["Groq<br/>gpt-oss-120b"]
+    NV["NVIDIA<br/>fallback"]
+    GEM["Gemini<br/>embeddings"]
+  end
 
-    subgraph tools["Tool surface (7 typed tools)"]
-        READ["lookup_asset · search_assets<br/>lookup_employee · recommend_assets"]
-        POL["search_policy"]
-        WRITE["add_asset · transfer_asset<br/><i>two-phase</i>"]
-    end
+  subgraph TL["Tools · 7 typed"]
+    direction LR
+    READS["Reads<br/>lookup_asset · search_assets<br/>lookup_employee · recommend_assets"]
+    POL["search_policy"]
+    WR["Writes<br/>add_asset · transfer_asset"]
+  end
 
-    subgraph data["Data"]
-        DB[("SQLite<br/>assets · employees · audit log")]
-        IDX[("Policy index<br/>BM25 + embeddings")]
-        TRACE[("traces.jsonl")]
-    end
+  subgraph DT["Data"]
+    direction LR
+    DB[("SQLite<br/>assets · employees · audit")]
+    IDX[("Policy index<br/>BM25 + embeddings")]
+    TR[("traces.jsonl")]
+  end
 
-    LLM{{"LLM provider<br/>Gemini · OpenAI-compatible"}}
+  GOUT["OUTPUT GUARDRAILS<br/>grounding · citations"]
 
-    UI --> CHAT
-    REST --> CHAT
-    REST --> DET
-    CHAT --> GIN --> LOOP
-    LOOP <--> LLM
-    LOOP --> MEM
-    LOOP --> GTOOL --> READ & POL & WRITE
-    WRITE <--> CONF
-    READ --> DB
-    WRITE --> DB
-    POL --> IDX
-    DET --> DB
-    LOOP --> GOUT --> CHAT
-    LOOP -.-> TRACE
+  UI --> GIN
+  API --> GIN
+  GIN -->|validated| LOOP
+  MEM <--> LOOP
+  LOOP <-->|prompt + tools · reply| IFACE
+  IFACE --> FB
+  FB -->|primary| GROQ
+  GROQ -.->|rate-limited| NV
+  GEM -.->|vectors| IDX
+  LOOP -->|dispatch| READS
+  LOOP -->|dispatch| POL
+  LOOP -->|preview · commit| WR
+  WR <-->|mint · redeem token| CONF
+  READS --> DB
+  WR --> DB
+  POL --> IDX
+  LOOP -.->|every turn| TR
+  LOOP --> GOUT
+  GOUT -->|reply + tools_used| UI
+  GOUT --> API
 
-    classDef guard fill:#fff4e6,stroke:#e8a33d
-    classDef store fill:#eef7ee,stroke:#5a9e5a
-    class GIN,GTOOL,GOUT,CONF guard
-    class DB,IDX,TRACE store
+  classDef guard fill:#fff4e6,stroke:#e8a33d,color:#141a20
+  classDef store fill:#eef7ee,stroke:#5a9e5a,color:#141a20
+  classDef prov fill:#eaf3fb,stroke:#5b8fc7,color:#141a20
+  class GIN,GOUT,CONF guard
+  class DB,IDX,TR store
+  class GROQ,NV,GEM prov
 ```
 
 ## One turn, end to end
